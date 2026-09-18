@@ -1,10 +1,13 @@
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+import ipaddress
 import re
 import time
 
 import joblib
+import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -25,21 +28,6 @@ APP_VERSION = "1.0.0"
 # ML Artifact Paths
 # ============================================================
 
-# main.py is located at:
-#
-# app/backend/main.py
-#
-# Project root:
-#
-# Phishing-URL-Detecting-Application/
-#
-# ML artifacts:
-#
-# ml-pipeline/model/
-#
-# Therefore:
-# backend -> app -> project root -> ml-pipeline/model
-
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent.parent
 MODEL_DIR = PROJECT_ROOT / "ml-pipeline" / "model"
@@ -50,7 +38,22 @@ FEATURES_PATH = MODEL_DIR / "features_list.pkl"
 
 
 # ============================================================
-# FastAPI Application
+# Constants for Feature Extraction
+# ============================================================
+
+KNOWN_SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd",
+    "cutt.ly", "ow.ly", "rebrand.ly", "t.ly", "qr.ae"
+}
+
+PHISH_KEYWORDS_REGEX = (
+    r"(login|verify|update|banking|secure|signin|account|"
+    r"wallet|confirm|credential|password|auth|billing)"
+)
+
+
+# ============================================================
+# FastAPI Application & CORS Configuration
 # ============================================================
 
 app = FastAPI(
@@ -59,26 +62,11 @@ app = FastAPI(
     version=APP_VERSION,
 )
 
-
-# ============================================================
-# CORS Configuration
-# ============================================================
-
-# Development frontend URLs.
-#
-# Add your deployed frontend URL here when deploying.
-
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -90,7 +78,6 @@ app.add_middleware(
 model = None
 scaler = None
 features_list: List[str] = []
-
 history_logs: List[Dict] = []
 
 
@@ -99,42 +86,23 @@ history_logs: List[Dict] = []
 # ============================================================
 
 def load_ml_artifacts() -> None:
-    """
-    Load the trained ML model, scaler and feature list.
-
-    The application will still start if the artifacts cannot
-    be loaded. Prediction endpoints will return a controlled
-    503 response instead of crashing the application.
-    """
-
-    global model
-    global scaler
-    global features_list
+    """Load the trained ML model, scaler and feature list."""
+    global model, scaler, features_list
 
     try:
         if not MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Model file not found: {MODEL_PATH}"
-            )
-
+            raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
         if not SCALER_PATH.exists():
-            raise FileNotFoundError(
-                f"Scaler file not found: {SCALER_PATH}"
-            )
-
+            raise FileNotFoundError(f"Scaler file not found: {SCALER_PATH}")
         if not FEATURES_PATH.exists():
-            raise FileNotFoundError(
-                f"Features file not found: {FEATURES_PATH}"
-            )
+            raise FileNotFoundError(f"Features file not found: {FEATURES_PATH}")
 
         model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
         features_list = joblib.load(FEATURES_PATH)
 
         if not isinstance(features_list, list):
-            raise TypeError(
-                "features_list.pkl must contain a list."
-            )
+            raise TypeError("features_list.pkl must contain a list.")
 
         print("✓ All ML artifacts loaded successfully.")
         print(f"✓ Model: {MODEL_PATH}")
@@ -145,9 +113,7 @@ def load_ml_artifacts() -> None:
         model = None
         scaler = None
         features_list = []
-
-        print("✗ Failed to load ML artifacts.")
-        print(f"✗ Error: {exc}")
+        print(f"✗ Failed to load ML artifacts: {exc}")
 
 
 load_ml_artifacts()
@@ -176,150 +142,79 @@ class BatchURLRequest(BaseModel):
 
 
 # ============================================================
-# URL Feature Extraction
+# Numerical Feature Extraction for Machine Learning Model
 # ============================================================
 
 def extract_features(raw_url: str) -> List[int]:
     """
-    Convert a raw URL into the 10 numerical features expected
-    by the trained Random Forest model.
+    Extract the 10 numerical features expected by the Random Forest model:
+    1. length_url: Total length of the URL
+    2. nb_dots: Number of dots ('.')
+    3. nb_hyphens: Number of hyphens ('-')
+    4. nb_slash: Number of slashes ('/')
+    5. nb_subdomains: Number of subdomains in host
+    6. prefix_suffix: Presence of '-' in domain host (0 or 1)
+    7. shortening_service: Domain is a known URL shortener (0 or 1)
+    8. phish_hints: Phishing keyword presence (0 or 1)
+    9. ip: Host is an IP address (0 or 1)
+    10. https_token: Protocol is insecure HTTP (0: HTTPS, 1: HTTP)
     """
-
     url = raw_url.strip()
-
     if not url:
         raise ValueError("URL cannot be empty.")
 
-    # Add a scheme if the user didn't provide one.
+    # Normalize protocol for URL parsing if omitted
     if not url.lower().startswith(("http://", "https://")):
-        url = f"http://{url}"
+        normalized_url = "https://" + url
+    else:
+        normalized_url = url
 
-    parsed = urlparse(url)
+    parsed = urlparse(normalized_url)
+    hostname = parsed.netloc or parsed.path.split("/")[0]
 
-    hostname = parsed.netloc
-
-    if not hostname:
-        hostname = parsed.path.split("/")[0]
-
-    # Remove possible authentication information.
     if "@" in hostname:
         hostname = hostname.split("@")[-1]
 
-    # Remove port.
-    clean_host = hostname.split(":")[0]
+    clean_host = hostname.split(":")[0].lower()
 
-    # --------------------------------------------------------
-    # Feature 1: URL Length
-    # --------------------------------------------------------
-
+    # 1. Feature: URL Length
     length_url = len(url)
 
-    # --------------------------------------------------------
-    # Feature 2: Number of Dots
-    # --------------------------------------------------------
-
+    # 2. Feature: Dot count
     nb_dots = url.count(".")
 
-    # --------------------------------------------------------
-    # Feature 3: Number of Hyphens
-    # --------------------------------------------------------
-
+    # 3. Feature: Hyphen count
     nb_hyphens = url.count("-")
 
-    # --------------------------------------------------------
-    # Feature 4: Number of Slashes
-    # --------------------------------------------------------
-
+    # 4. Feature: Slash count
     nb_slash = url.count("/")
 
-    # --------------------------------------------------------
-    # Feature 5: Number of Subdomains
-    # --------------------------------------------------------
+    # 5. Feature: Subdomains count
+    host_parts = [p for p in clean_host.split(".") if p]
+    nb_subdomains = max(1, len(host_parts) - 1)
 
-    subdomain_parts = clean_host.split(".")
+    # 6. Feature: Prefix / Suffix
+    prefix_suffix = 1 if "-" in clean_host else 0
 
-    nb_subdomains = max(
-        0,
-        len(subdomain_parts) - 2
-    )
+    # 7. Feature: Shortening Service
+    shortening_service = 1 if (
+        clean_host in KNOWN_SHORTENERS
+        or any(clean_host.endswith("." + s) for s in KNOWN_SHORTENERS)
+    ) else 0
 
-    # --------------------------------------------------------
-    # Feature 6: Prefix / Suffix
-    # --------------------------------------------------------
+    # 8. Feature: Phishing Keyword Hints (phish_hints feature in dataset)
+    phish_hints = 1 if re.search(PHISH_KEYWORDS_REGEX, url.lower()) else 0
 
-    prefix_suffix = (
-        1
-        if "-" in clean_host
-        else 0
-    )
+    # 9. Feature: IP Address Host
+    is_ip = 0
+    try:
+        ipaddress.ip_address(clean_host)
+        is_ip = 1
+    except ValueError:
+        is_ip = 0
 
-    # --------------------------------------------------------
-    # Feature 7: URL Shortening Service
-    # --------------------------------------------------------
-
-    shorteners_regex = (
-        r"(bit\.ly|tinyurl\.com|t\.co|goo\.gl|"
-        r"is\.gd|cutt\.ly|ow\.ly)"
-    )
-
-    shortening_service = (
-        1
-        if re.search(
-            shorteners_regex,
-            url.lower()
-        )
-        else 0
-    )
-
-    # --------------------------------------------------------
-    # Feature 8: Phishing Keywords
-    # --------------------------------------------------------
-
-    phishing_keywords_regex = (
-        r"(login|verify|update|banking|secure|"
-        r"signin|account|wallet|confirm)"
-    )
-
-    phishing_hints = (
-        1
-        if re.search(
-            phishing_keywords_regex,
-            url.lower()
-        )
-        else 0
-    )
-
-    # --------------------------------------------------------
-    # Feature 9: IP Address
-    # --------------------------------------------------------
-
-    ip_pattern = (
-        r"^(?:(?:25[0-5]|"
-        r"2[0-4][0-9]|"
-        r"[01]?[0-9][0-9]?)\.){3}"
-        r"(?:25[0-5]|"
-        r"2[0-4][0-9]|"
-        r"[01]?[0-9][0-9]?)$"
-    )
-
-    ip = (
-        1
-        if re.match(
-            ip_pattern,
-            clean_host
-        )
-        else 0
-    )
-
-    # --------------------------------------------------------
-    # Feature 10: HTTPS Token
-    # --------------------------------------------------------
-
-    https_token = (
-        1
-        if "https" in hostname.lower()
-        else 0
-    )
+    # 10. Feature: Insecure HTTP Protocol Token
+    https_token = 1 if url.lower().startswith("http://") else 0
 
     return [
         length_url,
@@ -329,90 +224,54 @@ def extract_features(raw_url: str) -> List[int]:
         nb_subdomains,
         prefix_suffix,
         shortening_service,
-        phishing_hints,
-        ip,
+        phish_hints,
+        is_ip,
         https_token,
     ]
 
 
 # ============================================================
-# Model Availability
+# Pure Machine Learning Prediction
 # ============================================================
 
 def ensure_model_loaded() -> None:
-    """
-    Make sure the ML model and scaler are available.
-
-    Raises:
-        HTTPException: If the model is unavailable.
-    """
-
     if model is None or scaler is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "The machine learning model is currently "
-                "unavailable. Please try again later."
-            ),
+            detail="The machine learning model is currently unavailable.",
         )
 
-
-# ============================================================
-# Prediction
-# ============================================================
 
 def perform_prediction(raw_url: str) -> Dict:
     """
-    Extract URL features and perform ML prediction.
+    Perform 100% Machine Learning inference:
+    1. Extract numerical feature vector [f1, f2, ..., f10]
+    2. Normalize feature vector using StandardScaler
+    3. Run Random Forest Classifier to compute prediction and class probability
     """
-
     ensure_model_loaded()
 
     try:
-        features = extract_features(raw_url)
+        clean_url = raw_url.strip()
+        features = extract_features(clean_url)
 
-        # Make sure the feature count matches the trained model.
-        if features_list and len(features) != len(features_list):
-            raise RuntimeError(
-                "Feature count mismatch between the API "
-                "and trained model."
-            )
+        # Scale features
+        features_df = pd.DataFrame([features], columns=features_list)
+        features_scaled = scaler.transform(features_df)
 
-        features_scaled = scaler.transform([features])
-
-        prediction = int(
-            model.predict(features_scaled)[0]
-        )
-
-        probabilities = model.predict_proba(
-            features_scaled
-        )[0]
-
-        # Random Forest class probabilities normally follow
-        # the order in model.classes_.
-        phishing_probability = 0.0
+        # Machine Learning Inference (Random Forest)
+        prediction = int(model.predict(features_scaled)[0])
+        probabilities = model.predict_proba(features_scaled)[0]
 
         if hasattr(model, "classes_"):
             classes = list(model.classes_)
-
-            if 1 in classes:
-                phishing_index = classes.index(1)
-                phishing_probability = float(
-                    probabilities[phishing_index]
-                )
+            phishing_index = classes.index(1) if 1 in classes else 1
+            phishing_probability = float(probabilities[phishing_index])
         else:
-            # Fallback for the expected binary classification
-            # setup.
-            phishing_probability = float(
-                probabilities[1]
-            )
+            phishing_probability = float(probabilities[1])
 
-        risk_percentage = round(
-            phishing_probability * 100,
-            2
-        )
-
-        is_phishing = prediction == 1
+        risk_percentage = round(phishing_probability * 100, 2)
+        is_phishing = (prediction == 1)
 
         status = (
             "Phishing / Malicious"
@@ -420,16 +279,8 @@ def perform_prediction(raw_url: str) -> Dict:
             else "Legitimate / Safe"
         )
 
-        feature_dict = dict(
-            zip(
-                features_list,
-                features
-            )
-        )
-
-        timestamp = time.strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        feature_dict = dict(zip(features_list, features))
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
         result = {
             "url": raw_url,
@@ -440,10 +291,7 @@ def perform_prediction(raw_url: str) -> Dict:
             "timestamp": timestamp,
         }
 
-        # ----------------------------------------------------
         # Save History
-        # ----------------------------------------------------
-
         history_logs.insert(
             0,
             {
@@ -453,8 +301,6 @@ def perform_prediction(raw_url: str) -> Dict:
                 "timestamp": timestamp,
             },
         )
-
-        # Keep only the latest 50 scans.
         if len(history_logs) > 50:
             history_logs.pop()
 
@@ -462,121 +308,63 @@ def perform_prediction(raw_url: str) -> Dict:
 
     except HTTPException:
         raise
-
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        print(
-            f"Prediction error for URL "
-            f"'{raw_url}': {exc}"
-        )
-
+        print(f"Prediction error for URL '{raw_url}': {exc}")
         raise HTTPException(
             status_code=500,
-            detail=(
-                "An error occurred while analyzing "
-                "the URL."
-            ),
+            detail="An error occurred while analyzing the URL.",
         ) from exc
 
 
 # ============================================================
-# Health Check
+# API Endpoints
 # ============================================================
 
 @app.get("/")
 def health_check() -> Dict:
-    """
-    Server and ML model health check.
-    """
-
+    """Server and ML model health check."""
     return {
         "status": "Online",
-        "model_loaded": (
-            model is not None
-            and scaler is not None
-        ),
+        "model_loaded": (model is not None and scaler is not None),
         "algorithm": "Random Forest Classifier",
         "features_count": len(features_list),
     }
 
 
-# ============================================================
-# Single URL Prediction
-# ============================================================
-
 @app.post("/predict")
-def predict_single(
-    payload: SingleURLRequest,
-) -> Dict:
-    """
-    Analyze a single URL.
-    """
-
+def predict_single(payload: SingleURLRequest) -> Dict:
+    """Analyze a single URL using the ML model."""
     clean_url = payload.url.strip()
-
     if not clean_url:
-        raise HTTPException(
-            status_code=400,
-            detail="URL cannot be empty.",
-        )
-
+        raise HTTPException(status_code=400, detail="URL cannot be empty.")
     return perform_prediction(clean_url)
 
 
-# ============================================================
-# Batch URL Prediction
-# ============================================================
-
 @app.post("/predict-batch")
-def predict_batch(
-    payload: BatchURLRequest,
-) -> Dict:
-    """
-    Analyze multiple URLs at once.
-    """
-
+def predict_batch(payload: BatchURLRequest) -> Dict:
+    """Analyze multiple URLs at once using the ML model."""
     ensure_model_loaded()
-
-    cleaned_urls = [
-        url.strip()
-        for url in payload.urls
-        if url and url.strip()
-    ]
+    cleaned_urls = [u.strip() for u in payload.urls if u and u.strip()]
 
     if not cleaned_urls:
-        raise HTTPException(
-            status_code=400,
-            detail="URL list cannot be empty.",
-        )
+        raise HTTPException(status_code=400, detail="URL list cannot be empty.")
 
     results = []
-
     for url in cleaned_urls:
         try:
-            result = perform_prediction(url)
-            results.append(result)
-
+            results.append(perform_prediction(url))
         except HTTPException as exc:
-            # Return a controlled result for an individual
-            # failed URL instead of failing the entire batch.
-            results.append(
-                {
-                    "url": url,
-                    "is_phishing": False,
-                    "status": "Analysis Failed",
-                    "risk_score_percentage": 0,
-                    "features": {},
-                    "timestamp": time.strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-                    "error": exc.detail,
-                }
-            )
+            results.append({
+                "url": url,
+                "is_phishing": False,
+                "status": "Analysis Failed",
+                "risk_score_percentage": 0,
+                "features": {},
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": exc.detail,
+            })
 
     return {
         "total_analyzed": len(results),
@@ -584,75 +372,36 @@ def predict_batch(
     }
 
 
-# ============================================================
-# Model Information
-# ============================================================
-
 @app.get("/model-info")
 def get_model_info() -> Dict:
-    """
-    Return information about the trained ML model.
-    """
-
+    """Return information about the trained ML model."""
     ensure_model_loaded()
-
     try:
         importances = model.feature_importances_
-
         feature_importance = {
-            feature: round(
-                float(importance) * 100,
-                2,
-            )
-            for feature, importance in zip(
-                features_list,
-                importances,
-            )
+            feature: round(float(importance) * 100, 2)
+            for feature, importance in zip(features_list, importances)
         }
 
         return {
-            "model_name": (
-                "Random Forest Classifier"
-            ),
-            "benchmark_test_accuracy": "96.40%",
-            "benchmark_f1_score": "0.963",
-            "total_features": len(
-                features_list
-            ),
+            "model_name": "Random Forest Classifier",
+            "benchmark_test_accuracy": "82.31%",
+            "benchmark_f1_score": "0.802",
+            "total_features": len(features_list),
             "feature_names": features_list,
-            "feature_importance_weights": (
-                feature_importance
-            ),
-            "estimators_count": getattr(
-                model,
-                "n_estimators",
-                100,
-            ),
+            "feature_importance_weights": feature_importance,
+            "estimators_count": getattr(model, "n_estimators", 150),
         }
-
     except Exception as exc:
-        print(
-            f"Model information error: {exc}"
-        )
-
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Unable to retrieve model information."
-            ),
+            detail="Unable to retrieve model information.",
         ) from exc
 
 
-# ============================================================
-# Scan History
-# ============================================================
-
 @app.get("/history")
 def get_recent_scans() -> Dict:
-    """
-    Return the latest URL scan history.
-    """
-
+    """Return the latest URL scan history."""
     return {
         "count": len(history_logs),
         "recent_scans": history_logs[:20],
