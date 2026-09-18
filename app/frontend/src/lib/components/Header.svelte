@@ -2,6 +2,8 @@
 	import type { HealthStatus } from '$lib/types/phishing';
 
 	let { health }: { health: HealthStatus | null } = $props();
+
+	$inspect(health);
 </script>
 
 <header class="header">
@@ -14,20 +16,22 @@
 
 			<div>
 				<div class="brand-name">Phishing URL Shield</div>
-				<div class="brand-subtitle">Machine Learning Security</div>
+				<div class="brand-subtitle">
+					Machine Learning Security
+				</div>
 			</div>
 		</div>
 
 		<div class="status">
 
 			<span
-				class:online={health?.model_loaded}
-				class:offline={!health?.model_loaded}
 				class="status-dot"
+				class:online={health?.model_loaded === true}
+				class:offline={health?.model_loaded !== true}
 			></span>
 
 			<span>
-				{#if health?.model_loaded}
+				{#if health?.model_loaded === true}
 					Model Online
 				{:else}
 					Model Offline
