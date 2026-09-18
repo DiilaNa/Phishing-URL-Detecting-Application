@@ -33,8 +33,6 @@
 		try {
 			error = '';
 
-			console.log('Loading dashboard...');
-
 			const [healthResponse, modelResponse, historyResponse] =
 				await Promise.all([
 					checkHealth(),
@@ -42,15 +40,9 @@
 					getHistory()
 				]);
 
-			console.log('Health API response:', healthResponse);
-			console.log('Model API response:', modelResponse);
-			console.log('History API response:', historyResponse);
-
 			health = healthResponse;
 			model = modelResponse;
 			history = historyResponse.recent_scans;
-
-			console.log('Dashboard state updated.');
 		} catch (err) {
 			console.error('Dashboard loading error:', err);
 
@@ -67,11 +59,7 @@
 		result = null;
 
 		try {
-			console.log('Analyzing URL:', url);
-
 			result = await predictUrl(url);
-
-			console.log('Prediction result:', result);
 
 			const historyResponse = await getHistory();
 
@@ -89,7 +77,6 @@
 	}
 
 	onMount(() => {
-		console.log('Page mounted.');
 		loadDashboard();
 	});
 </script>
@@ -110,22 +97,6 @@
 	<Header {health} />
 
 	<main class="container">
-
-		<!-- TEMPORARY DEBUG -->
-		{#if health}
-			<div class="debug-box">
-				<strong>Backend Connected</strong>
-
-				<p>Status: {health.status}</p>
-				<p>Model Loaded: {health.model_loaded ? 'Yes' : 'No'}</p>
-				<p>Algorithm: {health.algorithm}</p>
-				<p>Features: {health.features_count}</p>
-			</div>
-		{:else}
-			<div class="debug-box">
-				Connecting to backend...
-			</div>
-		{/if}
 
 		<section class="hero">
 
@@ -295,6 +266,7 @@
 	:global(body) {
 		margin: 0;
 		background: #020617;
+
 		font-family:
 			Inter,
 			ui-sans-serif,
@@ -326,39 +298,11 @@
 
 	.container {
 		width: min(1180px, calc(100% - 48px));
+
 		margin: 0 auto;
+
 		padding: 75px 0 80px;
 	}
-
-	/* DEBUG BOX */
-
-	.debug-box {
-		margin-bottom: 30px;
-		padding: 15px 18px;
-
-		border: 1px solid #334155;
-		border-radius: 12px;
-
-		background: #0f172a;
-
-		color: #94a3b8;
-
-		font-size: 13px;
-	}
-
-	.debug-box strong {
-		display: block;
-
-		margin-bottom: 8px;
-
-		color: #4ade80;
-	}
-
-	.debug-box p {
-		margin: 4px 0;
-	}
-
-	/* HERO */
 
 	.hero {
 		max-width: 760px;
@@ -405,11 +349,12 @@
 	.hero h1 span {
 		display: block;
 
-		background: linear-gradient(
-			90deg,
-			#60a5fa,
-			#a78bfa
-		);
+		background:
+			linear-gradient(
+				90deg,
+				#60a5fa,
+				#a78bfa
+			);
 
 		-webkit-background-clip: text;
 
@@ -429,8 +374,6 @@
 
 		line-height: 1.7;
 	}
-
-	/* ERROR */
 
 	.error-message {
 		display: flex;
@@ -483,8 +426,6 @@
 		color: #94a3b8;
 	}
 
-	/* DASHBOARD */
-
 	.dashboard {
 		display: grid;
 
@@ -494,8 +435,6 @@
 
 		margin-top: 45px;
 	}
-
-	/* FEATURES */
 
 	.features-section {
 		margin-top: 85px;
@@ -571,8 +510,6 @@
 		line-height: 1.6;
 	}
 
-	/* FOOTER */
-
 	footer {
 		border-top: 1px solid #1e293b;
 
@@ -584,8 +521,6 @@
 
 		font-size: 11px;
 	}
-
-	/* RESPONSIVE */
 
 	@media (max-width: 850px) {
 		.dashboard {

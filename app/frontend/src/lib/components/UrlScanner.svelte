@@ -7,12 +7,21 @@
 		loading: boolean;
 	} = $props();
 
-	let url = '';
+	let url = $state('');
 
 	function submit() {
 		const trimmed = url.trim();
 
-		if (!trimmed || loading) {
+		console.log('Submit clicked:', trimmed);
+		console.log('Loading:', loading);
+
+		if (!trimmed) {
+			console.log('No URL entered');
+			return;
+		}
+
+		if (loading) {
+			console.log('Currently analyzing');
 			return;
 		}
 
@@ -23,6 +32,10 @@
 		if (event.key === 'Enter') {
 			submit();
 		}
+	}
+
+	function clearUrl() {
+		url = '';
 	}
 </script>
 
@@ -47,11 +60,13 @@
 				disabled={loading}
 			/>
 
-			{#if url}
+			{#if url.length > 0}
 				<button
+					type="button"
 					class="clear-button"
-					onclick={() => (url = '')}
+					onclick={clearUrl}
 					aria-label="Clear URL"
+					disabled={loading}
 				>
 					×
 				</button>
@@ -60,16 +75,23 @@
 		</div>
 
 		<button
+			type="button"
 			class="analyze-button"
 			onclick={submit}
-			disabled={loading || !url.trim()}
+			disabled={loading || url.trim().length === 0}
 		>
 			{#if loading}
+
 				<span class="spinner"></span>
+
 				Analyzing...
+
 			{:else}
+
 				Analyze URL
+
 				<span>→</span>
+
 			{/if}
 		</button>
 
@@ -121,6 +143,7 @@
 		position: absolute;
 		left: 16px;
 		font-size: 16px;
+		pointer-events: none;
 	}
 
 	input {
@@ -128,12 +151,17 @@
 		height: 54px;
 		box-sizing: border-box;
 		padding: 0 45px;
+
 		border: 1px solid #334155;
 		border-radius: 12px;
+
 		background: #020617;
 		color: #f8fafc;
+
 		font-size: 15px;
+
 		outline: none;
+
 		transition: 0.2s;
 	}
 
@@ -143,7 +171,9 @@
 
 	input:focus {
 		border-color: #3b82f6;
-		box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+
+		box-shadow:
+			0 0 0 3px rgba(59, 130, 246, 0.12);
 	}
 
 	input:disabled {
@@ -153,33 +183,64 @@
 	.clear-button {
 		position: absolute;
 		right: 12px;
+
 		border: none;
 		background: transparent;
+
 		color: #64748b;
+
 		font-size: 22px;
+
 		cursor: pointer;
+	}
+
+	.clear-button:hover:not(:disabled) {
+		color: #f8fafc;
+	}
+
+	.clear-button:disabled {
+		cursor: not-allowed;
 	}
 
 	.analyze-button {
 		height: 54px;
+
 		padding: 0 24px;
+
 		border: none;
 		border-radius: 12px;
-		background: linear-gradient(135deg, #2563eb, #4f46e5);
+
+		background:
+			linear-gradient(
+				135deg,
+				#2563eb,
+				#4f46e5
+			);
+
 		color: white;
+
 		font-weight: 700;
 		font-size: 14px;
+
 		cursor: pointer;
+
 		display: flex;
 		align-items: center;
+		justify-content: center;
 		gap: 10px;
+
 		transition: 0.2s;
+
 		white-space: nowrap;
 	}
 
 	.analyze-button:hover:not(:disabled) {
 		transform: translateY(-1px);
 		filter: brightness(1.1);
+	}
+
+	.analyze-button:active:not(:disabled) {
+		transform: translateY(0);
 	}
 
 	.analyze-button:disabled {
@@ -189,16 +250,22 @@
 
 	.hint {
 		margin-top: 12px;
+
 		color: #64748b;
+
 		font-size: 12px;
 	}
 
 	.spinner {
 		width: 15px;
 		height: 15px;
+
 		border: 2px solid rgba(255, 255, 255, 0.3);
+
 		border-top-color: white;
+
 		border-radius: 50%;
+
 		animation: spin 0.7s linear infinite;
 	}
 
@@ -214,7 +281,7 @@
 		}
 
 		.analyze-button {
-			justify-content: center;
+			width: 100%;
 		}
 	}
 </style>
