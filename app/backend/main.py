@@ -104,16 +104,16 @@ def load_ml_artifacts() -> None:
         if not isinstance(features_list, list):
             raise TypeError("features_list.pkl must contain a list.")
 
-        print("✓ All ML artifacts loaded successfully.")
-        print(f"✓ Model: {MODEL_PATH}")
-        print(f"✓ Scaler: {SCALER_PATH}")
-        print(f"✓ Features: {len(features_list)}")
+        print("[+] All ML artifacts loaded successfully.")
+        print(f"[+] Model: {MODEL_PATH}")
+        print(f"[+] Scaler: {SCALER_PATH}")
+        print(f"[+] Features: {len(features_list)}")
 
     except Exception as exc:
         model = None
         scaler = None
         features_list = []
-        print(f"✗ Failed to load ML artifacts: {exc}")
+        print(f"[-] Failed to load ML artifacts: {exc}")
 
 
 load_ml_artifacts()
