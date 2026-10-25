@@ -6,7 +6,7 @@ import type {
 	PredictionResult
 } from '$lib/types/phishing';
 
-const API_URL = 'http://127.0.0.1:8000';
+const API_URL = 'https://phishing-url-detecting-application.vercel.app';
 
 async function handleResponse<T>(response: Response): Promise<T> {
 	if (!response.ok) {
