@@ -29,8 +29,7 @@ APP_VERSION = "1.0.0"
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent.parent
-MODEL_DIR = PROJECT_ROOT / "ml-pipeline" / "model"
+MODEL_DIR = BASE_DIR / "model"
 
 MODEL_PATH = MODEL_DIR / "phishing_rf_model.pkl"
 SCALER_PATH = MODEL_DIR / "scaler.pkl"
@@ -43,8 +42,19 @@ FEATURES_PATH = MODEL_DIR / "features_list.pkl"
 
 KNOWN_SHORTENERS = {
     "bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd",
-    "cutt.ly", "ow.ly", "rebrand.ly", "t.ly", "qr.ae"
+    "cutt.ly", "ow.ly", "rebrand.ly", "t.ly", "qr.ae",
 }
+
+KNOWN_BRANDS = {
+    "facebook", "google", "paypal", "amazon", "microsoft", "apple", "instagram",
+    "netflix", "whatsapp", "telegram", "linkedin", "github", "dropbox", "adobe", "outlook",
+}
+
+SUSPICIOUS_TLDS = {"xyz", "top", "gq", "tk", "ml", "cf", "ga", "work", "click", "country"}
+
+HOMOGLYPH_TRANSLATION = str.maketrans({
+    "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g"
+})
 
 PHISH_KEYWORDS_REGEX = (
     r"(login|verify|update|banking|secure|signin|account|"
@@ -145,89 +155,98 @@ class BatchURLRequest(BaseModel):
 # Numerical Feature Extraction for Machine Learning Model
 # ============================================================
 
-def extract_features(raw_url: str) -> List[int]:
-    """
-    Extract the 10 numerical features expected by the Random Forest model:
-    1. length_url: Total length of the URL
-    2. nb_dots: Number of dots ('.')
-    3. nb_hyphens: Number of hyphens ('-')
-    4. nb_slash: Number of slashes ('/')
-    5. nb_subdomains: Number of subdomains in host
-    6. prefix_suffix: Presence of '-' in domain host (0 or 1)
-    7. shortening_service: Domain is a known URL shortener (0 or 1)
-    8. phish_hints: Phishing keyword presence (0 or 1)
-    9. ip: Host is an IP address (0 or 1)
-    10. https_token: Protocol is insecure HTTP (0: HTTPS, 1: HTTP)
-    """
+def extract_features(raw_url: str) -> List[float]:
+    """Extract feature vector in the same order as the trained model."""
+    feature_dict = extract_feature_dict(raw_url)
+    return [float(feature_dict[name]) for name in features_list]
+
+
+def normalize_url(raw_url: str) -> str:
     url = raw_url.strip()
     if not url:
         raise ValueError("URL cannot be empty.")
-
-    # Normalize protocol for URL parsing if omitted
     if not url.lower().startswith(("http://", "https://")):
-        normalized_url = "https://" + url
-    else:
-        normalized_url = url
+        return "https://" + url
+    return url
 
+
+def _brand_typo_flag(clean_host: str) -> int:
+    tokens = [t for t in re.split(r"[^a-z0-9]", clean_host.lower()) if t]
+    for token in tokens:
+        if not any(ch.isdigit() for ch in token):
+            continue
+        normalized = token.translate(HOMOGLYPH_TRANSLATION)
+        if normalized in KNOWN_BRANDS and token != normalized:
+            return 1
+    return 0
+
+
+def _exact_brand_domain(clean_host: str) -> int:
+    parts = [p for p in clean_host.split(".") if p]
+    base = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+    return 1 if base in KNOWN_BRANDS else 0
+
+
+def extract_feature_dict(raw_url: str) -> Dict[str, float]:
+    normalized_url = normalize_url(raw_url)
     parsed = urlparse(normalized_url)
-    hostname = parsed.netloc or parsed.path.split("/")[0]
 
+    hostname = parsed.netloc or parsed.path.split("/")[0]
     if "@" in hostname:
         hostname = hostname.split("@")[-1]
-
     clean_host = hostname.split(":")[0].lower()
 
-    # 1. Feature: URL Length
-    length_url = len(url)
+    normalized_lower = normalized_url.lower()
+    path_lower = parsed.path.lower() if parsed.path else ""
 
-    # 2. Feature: Dot count
-    nb_dots = url.count(".")
-
-    # 3. Feature: Hyphen count
-    nb_hyphens = url.count("-")
-
-    # 4. Feature: Slash count
-    nb_slash = url.count("/")
-
-    # 5. Feature: Subdomains count
     host_parts = [p for p in clean_host.split(".") if p]
     nb_subdomains = max(1, len(host_parts) - 1)
 
-    # 6. Feature: Prefix / Suffix
-    prefix_suffix = 1 if "-" in clean_host else 0
-
-    # 7. Feature: Shortening Service
-    shortening_service = 1 if (
-        clean_host in KNOWN_SHORTENERS
-        or any(clean_host.endswith("." + s) for s in KNOWN_SHORTENERS)
-    ) else 0
-
-    # 8. Feature: Phishing Keyword Hints (phish_hints feature in dataset)
-    phish_hints = 1 if re.search(PHISH_KEYWORDS_REGEX, url.lower()) else 0
-
-    # 9. Feature: IP Address Host
-    is_ip = 0
     try:
         ipaddress.ip_address(clean_host)
         is_ip = 1
     except ValueError:
         is_ip = 0
 
-    # 10. Feature: Insecure HTTP Protocol Token
-    https_token = 1 if url.lower().startswith("http://") else 0
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
 
-    return [
-        length_url,
-        nb_dots,
-        nb_hyphens,
-        nb_slash,
-        nb_subdomains,
-        prefix_suffix,
-        shortening_service,
-        phish_hints,
-        is_ip,
-        https_token,
-    ]
+    url_len = max(1, len(normalized_url))
+    host_len = max(1, len(clean_host))
+    tld = host_parts[-1] if host_parts else ""
+
+    return {
+        "length_url": float(len(normalized_url)),
+        "length_hostname": float(len(clean_host)),
+        "ip": float(is_ip),
+        "nb_dots": float(normalized_url.count(".")),
+        "nb_hyphens": float(normalized_url.count("-")),
+        "nb_at": float(normalized_url.count("@")),
+        "nb_qm": float(normalized_url.count("?")),
+        "nb_and": float(normalized_url.count("&")),
+        "nb_eq": float(normalized_url.count("=")),
+        "nb_underscore": float(normalized_url.count("_")),
+        "nb_percent": float(normalized_url.count("%")),
+        "nb_slash": float(normalized_url.count("/")),
+        "nb_dslash": float(normalized_url.count("//")),
+        "https_token": float(1 if normalized_lower.startswith("http://") else 0),
+        "ratio_digits_url": float(sum(ch.isdigit() for ch in normalized_url) / url_len),
+        "ratio_digits_host": float(sum(ch.isdigit() for ch in clean_host) / host_len),
+        "nb_subdomains": float(nb_subdomains),
+        "prefix_suffix": float(1 if "-" in clean_host else 0),
+        "shortening_service": float(
+            1 if (clean_host in KNOWN_SHORTENERS or any(clean_host.endswith("." + s) for s in KNOWN_SHORTENERS)) else 0
+        ),
+        "phish_hints": float(1 if re.search(PHISH_KEYWORDS_REGEX, normalized_lower) else 0),
+        "punycode": float(1 if "xn--" in clean_host else 0),
+        "port": float(1 if parsed_port else 0),
+        "path_extension": float(1 if re.search(r"\.[a-z0-9]{1,5}$", path_lower) else 0),
+        "brand_typo_flag": float(_brand_typo_flag(clean_host)),
+        "exact_brand_domain": float(_exact_brand_domain(clean_host)),
+        "suspecious_tld": float(1 if tld in SUSPICIOUS_TLDS else 0),
+    }
 
 
 # ============================================================
@@ -254,6 +273,7 @@ def perform_prediction(raw_url: str) -> Dict:
     try:
         clean_url = raw_url.strip()
         features = extract_features(clean_url)
+        feature_dict = extract_feature_dict(clean_url)
 
         # Scale features
         features_df = pd.DataFrame([features], columns=features_list)
@@ -279,7 +299,11 @@ def perform_prediction(raw_url: str) -> Dict:
             else "Legitimate / Safe"
         )
 
-        feature_dict = dict(zip(features_list, features))
+        filtered_feature_dict = {
+            name: float(feature_dict[name])
+            for name in features_list
+            if name in feature_dict
+        }
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
         result = {
@@ -287,7 +311,7 @@ def perform_prediction(raw_url: str) -> Dict:
             "is_phishing": is_phishing,
             "status": status,
             "risk_score_percentage": risk_percentage,
-            "features": feature_dict,
+            "features": filtered_feature_dict,
             "timestamp": timestamp,
         }
 
