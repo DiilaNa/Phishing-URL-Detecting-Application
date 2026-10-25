@@ -243,4 +243,4 @@ With the current generated artifacts, sample outcomes are:
 
 ## License
 
-MIT
+GNU GPLv3 License
